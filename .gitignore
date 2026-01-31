@@ -1,0 +1,11 @@
+# Exécutables
+*.exe
+*.out
+
+# Fichiers objets
+*.o
+*.obj
+
+# Dossiers de build
+build/
+bin/
