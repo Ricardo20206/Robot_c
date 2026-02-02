@@ -1,6 +1,16 @@
-# 🤖 Robot Éviteur d'Obstacles
+# 🤖 Robot Éviteur d'Obstacles / Suiveur de Ligne
 
-Projet en C simulant le comportement d'un robot capable de détecter et éviter les obstacles. Le code est modulaire et prêt à être adapté pour un robot physique (Arduino, Raspberry Pi, etc.).
+Projet en C modulaire : évitement d'obstacles, **PID vitesse moteur**, **capteurs réels (HC-SR04 / IR)**, **portage STM32 (CubeIDE)**, **FreeRTOS**, et **suiveur de ligne** complet.
+
+## 🗂️ Étapes du projet (1 → 5)
+
+| Étape | Contenu |
+| ----- | ------- |
+| **1. PID vitesse** | Régulation vitesse moteurs avec période (dt), saturation sortie, anti-windup (`pid.c` / `pid.h`) |
+| **2. Capteur réel** | Modes SIM / HC-SR04 / IR dans `config.h` ; HAL `hal_micros`, `hal_hcsr04_*`, `hal_adc_*` ; `sensor.c` branché sur le mode |
+| **3. Portage STM32** | Dossier `stm32/` : `hal_stm32.c` pour CubeIDE, broches à adapter (voir `stm32/README_STM32.md`) |
+| **4. FreeRTOS** | Dossier `freertos/` : tâches Sensor + Control, file distance, `main_freertos.c` (voir `freertos/README_FREERTOS.md`) |
+| **5. Suiveur de ligne** | `sensor_get_line_position()`, `sensor_read_line_raw()`, PID ligne dans `main.c` ; activable via `LINE_FOLLOW_ENABLED` dans `config.h` |
 
 ## 📦 Prérequis
 
@@ -12,9 +22,9 @@ Projet en C simulant le comportement d'un robot capable de détecter et éviter 
 
 Le robot fonctionne selon une **machine à états** à trois étapes :
 
-1. **AVANCER** — Le robot se déplace en ligne droite
-2. **ARRÊT** — Lorsqu'un obstacle est détecté à moins de 20 cm, le robot s'arrête pendant 500 ms
-3. **TOURNER** — Le robot tourne sur place pendant 700 ms, puis repart en avant
+1. **AVANCER** — Suivi de ligne (si activé) + régulation vitesse ; détection obstacle à &lt; 20 cm
+2. **ARRÊT** — Le robot s'arrête pendant 2 s
+3. **TOURNER** — Rotation sur place pendant 1,5 s, puis retour en avant
 
 Le cycle se répète indéfiniment dans une boucle infinie.
 
@@ -29,10 +39,10 @@ Le cycle se répète indéfiniment dans une boucle infinie.
               │  (avancer)│                         │  (arrêt)  │
               └───────────┘                         └───────────┘
                     ▲                                     │
-                    │                                     │ 500 ms
+                    │                                     │ 2 s
                     │                                     ▼
                     │                               ┌───────────┐
-                    └──── 700 ms ───────────────────│   TURN    │
+                    └──── 1,5 s ────────────────────│   TURN    │
                               (tourner)             │ (rotation)│
                                                     └───────────┘
 ```
@@ -42,13 +52,25 @@ Le cycle se répète indéfiniment dans une boucle infinie.
 ```
 Robot_c/
 ├── include/
-│   ├── motor.h      # Interface des moteurs (états, prototypes)
-│   └── sensor.h     # Interface du capteur de distance
+│   ├── config.h    # SENSOR_MODE (SIM/HCSR04/IR), LINE_FOLLOW_ENABLED, LINE_SENSOR_COUNT
+│   ├── hal.h       # HAL temps, moteurs, HC-SR04, ADC
+│   ├── motor.h     # PWM, vitesse, stop/forward
+│   ├── pid.h       # PID avec dt, saturation sortie
+│   └── sensor.h    # Distance, obstacle, ligne (position + raw)
 ├── src/
-│   ├── main.c       # Logique principale et machine à états
-│   ├── motor.c      # Implémentation des moteurs (simulation)
-│   └── sensor.c     # Implémentation du capteur (simulation)
-├── robot.exe        # Exécutable (Windows)
+│   ├── main.c      # FSM + PID vitesse + PID ligne (si activé)
+│   ├── motor.c     # Moteurs (simulation ou PWM via HAL)
+│   ├── sensor.c    # Capteurs (SIM / HC-SR04 / IR, ligne)
+│   ├── hal.c       # HAL PC (Windows/Linux)
+│   └── pid.c       # Régulateur PID
+├── stm32/          # Portage STM32 CubeIDE
+│   ├── hal_stm32.c
+│   └── README_STM32.md
+├── freertos/       # Version FreeRTOS (tâches, file)
+│   ├── main_freertos.c
+│   ├── robot_tasks.c / .h
+│   └── README_FREERTOS.md
+├── Makefile
 └── README.md
 ```
 
@@ -63,17 +85,14 @@ Robot_c/
 
 ## 🔧 Compilation
 
-### Windows (MinGW / MSVC)
+### PC (Windows / Linux / macOS)
 
 ```bash
-gcc -o robot.exe src/main.c src/motor.c src/sensor.c -I include
+gcc -Wall -Wextra -std=c11 -I include -o robot \
+  src/main.c src/motor.c src/sensor.c src/hal.c src/pid.c
 ```
 
-### Linux / macOS
-
-```bash
-gcc -o robot src/main.c src/motor.c src/sensor.c -I include
-```
+Sous Windows : `robot.exe` à la place de `robot`.
 
 > Sous Linux/macOS, remplacer `Sleep()` et `GetTickCount()` par des équivalents (`usleep`, `gettimeofday`).
 
@@ -115,16 +134,18 @@ Etat: FORWARD
 
 ## 📐 Paramètres configurables
 
-| Paramètre | Valeur | Fichier | Description |
-| --------- | ------ | ------- | ----------- |
-| `OBSTACLE_DISTANCE_CM` | 20 | main.c | Distance seuil (cm) pour considérer un obstacle |
-| Durée arrêt | 500 ms | main.c | Temps d'arrêt avant de tourner |
-| Durée rotation | 700 ms | main.c | Temps de rotation sur place |
+| Paramètre | Fichier | Description |
+| --------- | ------- | ----------- |
+| `SENSOR_MODE` | config.h | SIM / HCSR04 / IR |
+| `LINE_FOLLOW_ENABLED` | config.h | 1 = suivi de ligne + évitement |
+| `LINE_SENSOR_COUNT` | config.h | Nombre de capteurs IR ligne (ex. 5) |
+| Seuil obstacle 20 cm, durée STOP 2000 ms, TURN 1500 ms | main.c | FSM évitement |
 
 ## 🔌 Adapter pour du matériel réel
 
-- **motor.c** : Remplacer les `printf` par des appels GPIO/PWM (ex. Arduino `analogWrite`, Raspberry Pi `wiringPi`)
-- **sensor.c** : Remplacer `rand() % 100` par la lecture d'un capteur ultrason (HC-SR04) ou infrarouge
+- **config.h** : Passer `SENSOR_MODE` à `SENSOR_MODE_HCSR04` ou `SENSOR_MODE_IR`.
+- **stm32/** : Utiliser `hal_stm32.c` dans un projet CubeIDE (symbole `USE_STM32`), adapter broches.
+- **freertos/** : Lier `main_freertos.c` + `robot_tasks.c` avec FreeRTOS (symbole `USE_FREERTOS`).
 
 ## 📝 Licence
 
